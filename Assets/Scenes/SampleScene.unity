@@ -404,13 +404,15 @@ MonoBehaviour:
   relativoACamera: 1
   velocidadeMovimento: 3
   zonaMorta: 0.08
+  histereseZonaMorta: 0.02
   compensarZonaMortaRadial: 1
+  tempoSuavizacaoInput: 0.06
   pivoModelo: {fileID: 0}
   deslocamentoYawModelo: 0
   interpolacaoGiro: 5
   limiarRotacao: 0.06
   girarQuandoParado: 0
-  animator: {fileID: 0}
+  animator: {fileID: 225897893}
   nomeParametroSpeed: Speed
 --- !u!114 &225897895
 MonoBehaviour:
