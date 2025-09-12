@@ -167,11 +167,11 @@ public class LimitarAreaPlataforma : MonoBehaviour
         // Se bateu na borda, opcionalmente zera a velocidade planar
         bool bateuBorda = !Mathf.Approximately(xAntes, local.x) || !Mathf.Approximately(zAntes, local.z);
 
-#if UNITY_600_OR_NEWER
+        #if UNITY_600_OR_NEWER
         Vector3 vel = rb.linearVelocity;
-#else
-        Vector3 vel = rb.linearVelocity;
-#endif
+        #else
+        Vector3 vel = rb.velocity;
+        #endif
 
         if (bateuBorda && zerarVelocidadeNaBorda)
         {
@@ -179,19 +179,19 @@ public class LimitarAreaPlataforma : MonoBehaviour
             vel.z = 0f;
         }
 
-        // Aplica posição clampada e mantém a componente Y da física (gravidade já não importa, pois colamos no topo)
+        // Aplica posição clampada e mantém a componente Y da física
         clampedW.y = plataforma.TransformPoint(new Vector3(0f, topoLocalY, 0f)).y;
 
         rb.MovePosition(clampedW);
 
-#if UNITY_600_OR_NEWER
+        #if UNITY_600_OR_NEWER
         rb.linearVelocity = vel;
-#else
-        rb.linearVelocity = vel;
-#endif
+        #else
+        rb.velocity = vel;
+        #endif
     }
 
-#if UNITY_EDITOR
+    #if UNITY_EDITOR
     private void OnDrawGizmosSelected()
     {
         if (!plataforma) return;
@@ -217,5 +217,5 @@ public class LimitarAreaPlataforma : MonoBehaviour
 
         Gizmos.DrawLine(l1, l2); Gizmos.DrawLine(l2, l3); Gizmos.DrawLine(l3, l4); Gizmos.DrawLine(l4, l1);
     }
-#endif
+    #endif
 }

@@ -69,7 +69,15 @@ public class EcoDigitalController : MonoBehaviour
 
         // 2) Movimento
         Vector3 velocidadeDesejada = direcaoPlanar * (velocidadeMovimento * intensidade);
-    rb.linearVelocity = new Vector3(velocidadeDesejada.x, rb.linearVelocity.y, velocidadeDesejada.z);
+
+        // aplica somente XZ e preserva Y da física
+        #if UNITY_600_OR_NEWER
+        Vector3 curVel = rb.linearVelocity;
+        rb.linearVelocity = new Vector3(velocidadeDesejada.x, curVel.y, velocidadeDesejada.z);
+        #else
+        Vector3 curVel = rb.velocity;
+        rb.velocity = new Vector3(velocidadeDesejada.x, curVel.y, velocidadeDesejada.z);
+        #endif
 
         // 3) Rotação visual
         AtualizarRotacaoVisual(direcaoPlanar);

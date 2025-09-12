@@ -27,10 +27,9 @@ Material:
     m_Floats:
     - _BlockSize: 66
     - _ColorSplit: 2.06
-    - _Intensity: 0.89982915
+    - _Intensity: 0.6706249
     - _Jitter: 1
     - _Scanlines: 0.83
     - _TimeScale: 1
     m_Colors: []
   m_BuildTextureStacks: []
-  m_AllowLocking: 1
