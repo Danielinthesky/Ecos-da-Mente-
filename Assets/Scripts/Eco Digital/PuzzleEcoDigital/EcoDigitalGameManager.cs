@@ -23,8 +23,15 @@ public class EcoDigitalGameManager : MonoBehaviour
     [Tooltip("Spawners (4 no seu caso). Ordem livre, mas lembre qual é qual).")]
     [SerializeField] private Transform[] spawners = new Transform[4];
 
-    [Tooltip("Prefab do projétil (deve ter Rigidbody e o script EcoTiroProjetil).")]
+    [Tooltip("Prefab do projétil (global/opcional). Será usado se a regra não tiver sua própria lista.")]
     [SerializeField] private GameObject prefabProjetil;
+
+    public enum ModoSelecaoPrefab
+    {
+        Primeiro,           // Usa o primeiro da lista da regra
+        AleatorioCadaTiro,  // Sorteia a cada tiro
+        RoundRobin          // Alterna ciclicamente entre os prefabs da lista
+    }
 
     [System.Serializable]
     public struct RegraDeTiroPorEstado
@@ -43,15 +50,19 @@ public class EcoDigitalGameManager : MonoBehaviour
 
         [Tooltip("Velocidade do projétil (m/s).")]
         public float velocidadeProjetil;
+
+        [Header("Prefabs desta seção")]
+        [Tooltip("Se vazio/nulo, usa o prefab global (prefabProjetil).")]
+        public GameObject[] prefabsProjetil;
+
+        [Tooltip("Como escolher o prefab desta seção.")]
+        public ModoSelecaoPrefab modoSelecao;
     }
 
     [Header("Regras por Estado")]
-    [Tooltip("Mapeie aqui: Estado da câmera -> Quem atira? Quantos tiros? Velocidade?")]
-    [SerializeField] private RegraDeTiroPorEstado[] regras = new RegraDeTiroPorEstado[]
-    {
-        // Exemplo pronto; ajuste se quiser:
-        // new RegraDeTiroPorEstado { stateName = "CameraJogo6", spawnerIndex = 0, quantidadeTiros = 3, intervaloEntreTiros = 0.25f, velocidadeProjetil = 10f },
-    };
+    [Tooltip("Mapeie aqui: Estado da câmera -> Quem atira? Quantos tiros? Velocidade? Quais prefabs?")]
+    [SerializeField]
+    private RegraDeTiroPorEstado[] regras = new RegraDeTiroPorEstado[] { };
 
     [Header("Eventos")]
     public UnityEvent OnPainelInicioMostrado;
@@ -59,10 +70,27 @@ public class EcoDigitalGameManager : MonoBehaviour
     // ===== controle interno =====
     private int _lastFullPathHash = 0;
 
+    // round-robin: índice atual por regra
+    private int[] _rrIndex;
+
+    [Header("Gestos / Desenho na tela")]
+    [SerializeField] private GameObject holderGestos;         // arraste o GO com MecanicaDesenhoNaTela + MecanicaReconhecerFormas
+    [SerializeField] private GameObject gestureCamGO;         // opcional: se sua câmera overlay é um GO separado
+    [SerializeField] private bool desativarHolderNoStart = true;
+
     private void Start()
     {
         if (painelInicio != null)
             painelInicio.SetActive(mostrarNoStart);
+
+        // inicializa round-robin por regra
+        _rrIndex = (regras != null && regras.Length > 0) ? new int[regras.Length] : new int[0];
+
+        // manter holder de gestos desativado no início, se for o caso
+        if (desativarHolderNoStart && holderGestos != null)
+            holderGestos.SetActive(false);
+        if (desativarHolderNoStart && gestureCamGO != null)
+            gestureCamGO.SetActive(false);
     }
 
     private void Update()
@@ -100,40 +128,31 @@ public class EcoDigitalGameManager : MonoBehaviour
         if (painelInicio.activeSelf) painelInicio.SetActive(false);
     }
 
-    /// <summary>Chamado pelo botão "Jogar". Fecha o painel e aciona o trigger da câmera.</summary>
+    /// <summary>Chamado pelo botão "Jogar". Fecha o painel, aciona o trigger e liga gestos.</summary>
     public void IniciarJogo()
     {
-        // 1) Fecha o painel
+        // 1) Fecha painel
         EsconderPainelInicio();
 
-        // 2) Garante referência do Animator
+        // 2) Liga gestos/overlay (independente da câmera acertar o trigger)
+        if (holderGestos != null && !holderGestos.activeSelf)
+            holderGestos.SetActive(true);
+        if (gestureCamGO != null && !gestureCamGO.activeSelf)
+            gestureCamGO.SetActive(true);
+
+        // 3) Dispara trigger da câmera (se disponível)
         if (animatorCamera == null)
-        {
-            animatorCamera = GetComponent<Animator>();
-            if (animatorCamera == null)
-            {
-                animatorCamera = FindFirstObjectByType<Animator>();
-            }
-        }
+            animatorCamera = GetComponent<Animator>() ?? FindFirstObjectByType<Animator>();
 
-        if (animatorCamera == null)
+        if (animatorCamera != null && HasTrigger(animatorCamera, nomeTriggerCamera))
         {
-            Debug.LogWarning("[EcoDigitalGameManager] Nenhum Animator encontrado/atribuído para acionar o trigger.");
-            return;
+            animatorCamera.ResetTrigger(nomeTriggerCamera);
+            animatorCamera.SetTrigger(nomeTriggerCamera);
         }
-
-        // 3) Verifica se o parâmetro existe e é Trigger
-        if (!HasTrigger(animatorCamera, nomeTriggerCamera))
+        else
         {
-            Debug.LogWarning(FormatarParametros(animatorCamera,
-                $"[EcoDigitalGameManager] Parâmetro Trigger '{nomeTriggerCamera}' não encontrado no Animator:"));
-            return;
+            Debug.LogWarning($"[EcoDigitalGameManager] Animator/Trigger '{nomeTriggerCamera}' indisponível. Gestos foram ativados.");
         }
-
-        // 4) Dispara o Trigger
-        animatorCamera.ResetTrigger(nomeTriggerCamera);
-        animatorCamera.SetTrigger(nomeTriggerCamera);
-        // Debug.Log($"[EcoDigitalGameManager] Trigger '{nomeTriggerCamera}' acionado em '{animatorCamera.gameObject.name}'.");
     }
 
     // ======== Regras / Disparo ========
@@ -141,20 +160,21 @@ public class EcoDigitalGameManager : MonoBehaviour
     {
         if (regras == null || regras.Length == 0) return;
 
-        // Coleta todas as regras cujo nome bate com o estado atual
-        // Usamos IsName para permitir "StateName" ou "Base Layer.StateName".
-        List<RegraDeTiroPorEstado> regrasAlvo = new List<RegraDeTiroPorEstado>();
-        foreach (var r in regras)
+        // Coleta índices das regras cujo nome bate com o estado atual
+        List<int> idxRegrasAlvo = new List<int>();
+        for (int i = 0; i < regras.Length; i++)
         {
+            var r = regras[i];
             if (string.IsNullOrWhiteSpace(r.stateName)) continue;
             if (stateInfo.IsName(r.stateName) || stateInfo.IsName("Base Layer." + r.stateName))
-                regrasAlvo.Add(r);
+                idxRegrasAlvo.Add(i);
         }
+        if (idxRegrasAlvo.Count == 0) return;
 
-        if (regrasAlvo.Count == 0) return;
-
-        foreach (var regra in regrasAlvo)
+        foreach (int idx in idxRegrasAlvo)
         {
+            var regra = regras[idx];
+
             // Valida spawner
             if (spawners == null || spawners.Length == 0 || regra.spawnerIndex < 0 || regra.spawnerIndex >= spawners.Length)
             {
@@ -171,43 +191,89 @@ public class EcoDigitalGameManager : MonoBehaviour
                 Debug.LogWarning("[EcoDigitalGameManager] Transform do Eco não atribuído.");
                 continue;
             }
-            if (prefabProjetil == null)
+
+            // Valida prefabs (regra ou global)
+            bool temLista = (regra.prefabsProjetil != null && regra.prefabsProjetil.Length > 0);
+            if (!temLista && prefabProjetil == null)
             {
-                Debug.LogWarning("[EcoDigitalGameManager] Prefab do projétil não atribuído.");
+                Debug.LogWarning($"[EcoDigitalGameManager] Nenhum prefab de projétil definido (regra '{regra.stateName}' sem lista e prefab global vazio).");
                 continue;
             }
 
-            StartCoroutine(SequenciaDeTiros(spawners[regra.spawnerIndex], regra.quantidadeTiros,
-                Mathf.Max(0f, regra.intervaloEntreTiros), Mathf.Max(0.1f, regra.velocidadeProjetil)));
+            StartCoroutine(SequenciaDeTiros(idx, spawners[regra.spawnerIndex],
+                regra.quantidadeTiros, Mathf.Max(0f, regra.intervaloEntreTiros),
+                Mathf.Max(0.1f, regra.velocidadeProjetil)));
         }
     }
 
-    private IEnumerator SequenciaDeTiros(Transform spawner, int quantidade, float intervalo, float velocidade)
+    private IEnumerator SequenciaDeTiros(int regraIndex, Transform spawner, int quantidade, float intervalo, float velocidade)
     {
         int qtd = Mathf.Max(1, quantidade);
-        for (int i = 0; i < qtd; i++)
+
+        for (int shot = 0; shot < qtd; shot++)
         {
-            // Direção "congelada" no instante do disparo (reto, sem perseguição).
+            // Direção “congelada” no instante do disparo (reto, sem perseguir).
             Vector3 dir = (eco.position - spawner.position);
             dir.y = 0f; // opcional: trava no plano XZ; remova se quiser 3D completo
             Vector3 dirNorm = dir.sqrMagnitude > 0.0001f ? dir.normalized : spawner.forward;
 
-            GameObject go = Instantiate(prefabProjetil, spawner.position, Quaternion.LookRotation(dirNorm, Vector3.up));
-            // Se tiver o script EcoTiroProjetil, inicializa por ele:
-            var tiro = go.GetComponent<EcoTiroProjetil>();
-            if (tiro != null)
+            // Seleciona o prefab conforme a regra
+            var regra = regras[regraIndex];
+            GameObject prefab = SelecionarPrefabParaTiro(regraIndex, shot);
+
+            if (prefab == null)
             {
-                tiro.Lancar(dirNorm, velocidade);
+                Debug.LogWarning($"[EcoDigitalGameManager] Prefab nulo na regra '{regra.stateName}'. Pulando tiro.");
             }
             else
             {
-                // fallback: tenta achar Rigidbody e setar velocity
-                var rb = go.GetComponent<Rigidbody>();
-                if (rb != null) rb.velocity = dirNorm * velocidade;
+                GameObject go = Instantiate(prefab, spawner.position, Quaternion.LookRotation(dirNorm, Vector3.up));
+
+                // Inicializa movimento
+                var tiro = go.GetComponent<EcoTiroProjetil>();
+                if (tiro != null)
+                {
+                    tiro.Lancar(dirNorm, velocidade);
+                }
+                else
+                {
+                    var rb = go.GetComponent<Rigidbody>();
+                    if (rb != null) rb.velocity = dirNorm * velocidade;
+                }
             }
 
-            if (intervalo > 0f && i < qtd - 1)
+            if (intervalo > 0f && shot < qtd - 1)
                 yield return new WaitForSeconds(intervalo);
+        }
+    }
+
+    private GameObject SelecionarPrefabParaTiro(int regraIndex, int shotNumber)
+    {
+        if (regras == null || regraIndex < 0 || regraIndex >= regras.Length) return prefabProjetil;
+
+        var regra = regras[regraIndex];
+        var lista = regra.prefabsProjetil;
+        bool temLista = (lista != null && lista.Length > 0);
+
+        if (!temLista) return prefabProjetil;
+
+        switch (regra.modoSelecao)
+        {
+            case ModoSelecaoPrefab.Primeiro:
+                return lista[0];
+
+            case ModoSelecaoPrefab.AleatorioCadaTiro:
+                return lista[Random.Range(0, lista.Length)];
+
+            case ModoSelecaoPrefab.RoundRobin:
+                if (_rrIndex == null || _rrIndex.Length != regras.Length)
+                    _rrIndex = new int[regras.Length];
+                int idx = _rrIndex[regraIndex] % Mathf.Max(1, lista.Length);
+                _rrIndex[regraIndex] = (idx + 1) % lista.Length;
+                return lista[idx];
+
+            default:
+                return lista[0];
         }
     }
 
@@ -230,5 +296,11 @@ public class EcoDigitalGameManager : MonoBehaviour
         foreach (var p in anim.parameters)
             sb.AppendLine($"- {p.name} ({p.type})");
         return sb.ToString();
+    }
+
+    public void EncerrarGestos()
+    {
+        if (holderGestos) holderGestos.SetActive(false);
+        if (gestureCamGO) gestureCamGO.SetActive(false);
     }
 }
