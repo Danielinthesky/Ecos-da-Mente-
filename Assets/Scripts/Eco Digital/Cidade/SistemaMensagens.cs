@@ -1,78 +1,81 @@
+using System;
 using System.Collections;
 using UnityEngine;
 using TMPro;
-using System;
-
 
 [DisallowMultipleComponent]
 public class SistemaMensagens : MonoBehaviour
 {
-    [Header("Geração automática")]
-    [Tooltip("Se verdadeiro, recebe 1 notificação a cada 'intervaloSegundos'.")]
+    [Header("Geração automática (opcional)")]
     [SerializeField] private bool iniciarAutomatico = true;
-
-    [Tooltip("Intervalo (s) entre notificações.")]
     [SerializeField, Min(0.1f)] private float intervaloSegundos = 5f;
-
     [Tooltip("Se falso, usa tempo real (WaitForSecondsRealtime).")]
     [SerializeField] private bool usarTimeScale = true;
 
-    [Header("UI - Não lidas (sempre ativo)")]
-    [Tooltip("Painel que SEMPRE fica ativo.")]
-    [SerializeField] private GameObject painelNaoLidas;
-
-    [Tooltip("TMP com o texto 'X notificações não lidas'.")]
+    [Header("UI - Contador de não lidas (apenas TEXTO)")]
     [SerializeField] private TextMeshProUGUI textoNaoLidas;
 
-    [Header("UI - Notificação recebida")]
-    [Tooltip("Painel que aparece SOMENTE quando chega notificação.")]
-    [SerializeField] private GameObject painelRecebida;
-
-    [Tooltip("TMP do painel de recebida ('1 Notificação recebida').")]
+    [Header("UI - Painel ANIMADO de recebimento")]
+    [Tooltip("Animator do painel que abre com a notificação.")]
+    [SerializeField] private Animator animatorRecebida;
+    [Tooltip("Nome do trigger que abre o painel.")]
+    [SerializeField] private string triggerNovaMensagem = "NovaMensagemRecebida";
+    [Tooltip("TMP que será ATIVADO no final da animação (não ative por código aqui).")]
     [SerializeField] private TextMeshProUGUI textoRecebida;
 
-    [Tooltip("Quanto tempo (s) o painel 'recebida' fica visível após cada chegada.")]
-    [SerializeField, Min(0.1f)] private float tempoExibicaoRecebida = 1.5f;
-    public event Action<int> NotificacaoRecebida;
+    [Header("Fechamento automático")]
+    [Tooltip("Trigger para fechar o painel após a exibição da mensagem.")]
+    [SerializeField] private string triggerFechar = "FecharNotificao";
+    [Tooltip("Tempo (s) para fechar após a mensagem aparecer (TMP ativado).")]
+    [SerializeField, Min(0.1f)] private float tempoFecharSegundos = 3f;
 
+    [Header("Comportamento")]
+    [Tooltip("Mensagem padrão quando não for informado um texto.")]
+    [SerializeField] private string mensagemPadrao = "Nova mensagem";
+    [Tooltip("Tempo máximo (s) esperando o TMP ser ativado pela animação antes de desistir.")]
+    [SerializeField, Min(0.05f)] private float timeoutEsperaTMP = 2f;
+    [SerializeField] private bool logDebug = false;
+
+    public event Action<int> NotificacaoRecebida;
 
     // ----- Estado -----
     private int naoLidas = 0;
-    private Coroutine coLoop;          // loop de chegada
-    private bool timerAtivo = false;   // controla o temporizador do painel "recebida"
-    private int versaoExibicao = 0;    // truque para reiniciar o timer sem empilhar coroutines
+    private Coroutine coLoop;               // loop de chegada automática
+    private int versaoMensagem = 0;         // invalida esperas antigas
+    private string ultimaMensagemPendente;  // texto da última mensagem
+    private Coroutine coFechar;             // timer de fechamento
 
     private void Awake()
     {
-        naoLidas = 0; // sempre começa do zero
+        naoLidas = 0;
+        ultimaMensagemPendente = string.Empty;
     }
 
     private void Start()
     {
-        if (painelNaoLidas) painelNaoLidas.SetActive(true);
-        if (painelRecebida) painelRecebida.SetActive(false);
         AtualizarTextoNaoLidas();
 
-        if (iniciarAutomatico) IniciarMensagensAutomaticas();
+        // Painel/ativação do TMP são controlados pela ANIMAÇÃO.
+        // Não habilitar/desabilitar aqui por código.
+
+        if (iniciarAutomatico)
+            IniciarMensagensAutomaticas();
     }
 
     private void OnDisable()
     {
         PararMensagensAutomaticas();
-        if (painelRecebida) painelRecebida.SetActive(false);
-        timerAtivo = false;
+        CancelarFechamento();
     }
 
-    // ================= API =================
+    // =============== API PÚBLICA ===============
 
-    /// Inicia o recebimento: 1 notificação a cada 'intervaloSegundos'.
     public void IniciarMensagensAutomaticas()
     {
         PararMensagensAutomaticas();
         coLoop = StartCoroutine(CoLoopRecebimento());
     }
 
-    /// Para o recebimento automático.
     public void PararMensagensAutomaticas()
     {
         if (coLoop != null)
@@ -82,24 +85,6 @@ public class SistemaMensagens : MonoBehaviour
         }
     }
 
-    /// Dispara MANUALMENTE uma notificação (soma +1 nas não lidas).
-    public void ReceberNotificacao()
-    {
-        // 1) soma +1 nas não lidas
-        naoLidas++;
-        AtualizarTextoNaoLidas();
-
-        // 2) mostra "Notificação recebida"
-        if (painelRecebida) painelRecebida.SetActive(true);
-        if (textoRecebida) textoRecebida.text = "1 Notificação recebida";
-
-        // 3) reinicia o timer de exibição SEM empilhar coroutines
-        versaoExibicao++; // invalida timers antigos
-        if (!timerAtivo) StartCoroutine(CoOcultarRecebidaDepois(versaoExibicao));
-        NotificacaoRecebida?.Invoke(naoLidas);
-    }
-
-    /// Zera o contador (opcional).
     public void MarcarTodasComoLidas()
     {
         naoLidas = 0;
@@ -108,7 +93,55 @@ public class SistemaMensagens : MonoBehaviour
 
     public int ObterNaoLidas() => naoLidas;
 
-    // ================= Coroutines =================
+    /// Dispara manualmente uma notificação com texto customizado.
+    public void ReceberNotificacao(string mensagem)
+    {
+        naoLidas++;
+        AtualizarTextoNaoLidas();
+
+        // Guarda a mensagem mais recente
+        ultimaMensagemPendente = string.IsNullOrWhiteSpace(mensagem) ? mensagemPadrao : mensagem;
+        versaoMensagem++;
+
+        // Dispara a animação de abertura
+        if (animatorRecebida != null)
+        {
+            animatorRecebida.ResetTrigger(triggerNovaMensagem);
+            animatorRecebida.SetTrigger(triggerNovaMensagem);
+            if (logDebug) Debug.Log("[SistemaMensagens] Trigger NovaMensagemRecebida disparado.");
+        }
+        else if (logDebug)
+        {
+            Debug.LogWarning("[SistemaMensagens] Animator do painel não atribuído.");
+        }
+
+        // Se o TMP já estiver ativo (animação já habilitou), preenche agora; senão, espera.
+        if (textoRecebida != null && textoRecebida.isActiveAndEnabled)
+        {
+            PreencherTextoAtual();
+            ProgramarFechamento(); // inicia o timer de 3s após mostrar o texto
+        }
+        else
+        {
+            StartCoroutine(CoAguardarTMPAtivarEPreencher(versaoMensagem));
+        }
+
+        NotificacaoRecebida?.Invoke(naoLidas);
+    }
+
+    public void ReceberNotificacao() => ReceberNotificacao(mensagemPadrao);
+
+    // =============== SUPORTE À ANIMAÇÃO ===============
+
+    /// Chame via Animation Event no exato frame em que o TMP (textoRecebida) é ativado.
+    public void OnTMPRecebidaAtivado()
+    {
+        PreencherTextoAtual();
+        ProgramarFechamento();
+        if (logDebug) Debug.Log("[SistemaMensagens] TMP ativado por animação. Texto preenchido e timer de fechamento iniciado.");
+    }
+
+    // =============== Rotinas internas ===============
 
     private IEnumerator CoLoopRecebimento()
     {
@@ -117,25 +150,76 @@ public class SistemaMensagens : MonoBehaviour
             if (usarTimeScale) yield return new WaitForSeconds(intervaloSegundos);
             else               yield return new WaitForSecondsRealtime(intervaloSegundos);
 
-            ReceberNotificacao(); // soma +1 e mostra painel
+            ReceberNotificacao();
         }
     }
 
-    private IEnumerator CoOcultarRecebidaDepois(int versaoLocal)
+    /// Aguarda até o TMP ser ativado pela animação, então preenche o texto e agenda fechamento.
+    private IEnumerator CoAguardarTMPAtivarEPreencher(int versaoLocal)
     {
-        timerAtivo = true;
+        float t = 0f;
 
-        if (usarTimeScale) yield return new WaitForSeconds(tempoExibicaoRecebida);
-        else               yield return new WaitForSecondsRealtime(tempoExibicaoRecebida);
+        while (versaoLocal == versaoMensagem)
+        {
+            if (textoRecebida != null && textoRecebida.isActiveAndEnabled)
+                break;
 
-        // Só oculta se ninguém reiniciou o timer nesse meio tempo
-        if (versaoLocal == versaoExibicao && painelRecebida)
-            painelRecebida.SetActive(false);
+            if (t >= timeoutEsperaTMP)
+            {
+                if (logDebug) Debug.LogWarning("[SistemaMensagens] Timeout aguardando TMP ser ativado pela animação.");
+                yield break;
+            }
 
-        timerAtivo = false;
+            yield return null;
+            t += usarTimeScale ? Time.deltaTime : Time.unscaledDeltaTime;
+        }
+
+        if (versaoLocal != versaoMensagem) yield break;
+
+        PreencherTextoAtual();
+        ProgramarFechamento();
     }
 
-    // ================= UI =================
+    private void PreencherTextoAtual()
+    {
+        if (textoRecebida == null) return;
+
+        textoRecebida.text = string.IsNullOrEmpty(ultimaMensagemPendente)
+            ? mensagemPadrao
+            : ultimaMensagemPendente;
+    }
+
+    private void ProgramarFechamento()
+    {
+        CancelarFechamento();
+        coFechar = StartCoroutine(CoFecharDepois(tempoFecharSegundos));
+    }
+
+    private void CancelarFechamento()
+    {
+        if (coFechar != null)
+        {
+            StopCoroutine(coFechar);
+            coFechar = null;
+        }
+    }
+
+    private IEnumerator CoFecharDepois(float segundos)
+    {
+        if (usarTimeScale) yield return new WaitForSeconds(segundos);
+        else               yield return new WaitForSecondsRealtime(segundos);
+
+        if (animatorRecebida != null)
+        {
+            animatorRecebida.ResetTrigger(triggerFechar);
+            animatorRecebida.SetTrigger(triggerFechar);
+            if (logDebug) Debug.Log("[SistemaMensagens] Trigger de fechamento disparado.");
+        }
+        else if (logDebug)
+        {
+            Debug.LogWarning("[SistemaMensagens] Animator do painel não atribuído para fechar.");
+        }
+    }
 
     private void AtualizarTextoNaoLidas()
     {

@@ -67,6 +67,8 @@ public class EcoDigitalController : MonoBehaviour
 
     private void FixedUpdate()
     {
+        rb.angularVelocity = Vector3.zero;
+
         var gerenciador = FindObjectOfType<GerenciadorAnimacoesEcoDigital>();
         if (gerenciador != null && gerenciador.EstaEmpurrado)
         return; // bloqueia qualquer movimento
